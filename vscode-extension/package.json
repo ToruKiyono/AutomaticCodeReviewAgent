@@ -1,0 +1,51 @@
+{
+  "name": "acr-agent-vscode",
+  "displayName": "Automatic Code Review Agent",
+  "description": "Code review agent that integrates online/offline chat models and commit-aware reviews.",
+  "version": "0.1.0",
+  "publisher": "acr",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:acrAgent.configureModels",
+    "onCommand:acrAgent.runReview"
+  ],
+  "main": "dist/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "acr-agent-core": "file:../core"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "acrAgent.configureModels",
+        "title": "ACR Agent: Configure Models"
+      },
+      {
+        "command": "acrAgent.runReview",
+        "title": "ACR Agent: Review Latest Commit"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "ACR Agent",
+      "properties": {
+        "acrAgent.defaultPrompt": {
+          "type": "string",
+          "default": "Please review the staged changes with focus on reliability, security, and maintainability.",
+          "description": "Default review prompt when invoking the agent manually."
+        }
+      }
+    }
+  }
+}
