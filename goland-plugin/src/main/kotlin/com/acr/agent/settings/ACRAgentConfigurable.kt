@@ -76,7 +76,7 @@ class ACRAgentConfigurable : Configurable {
         panel.add(autoReviewCheckbox, constraints)
 
         constraints.gridy++
-        panel.add(JBLabel("Core config file (.acr-agent.config.json)"), constraints)
+        panel.add(JBLabel("Core config file (.acr-agent/config.json)"), constraints)
         constraints.gridy++
         configFileChooser.addBrowseFolderListener(
             "Select Config File",
