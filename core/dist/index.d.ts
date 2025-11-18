@@ -33,6 +33,20 @@ export interface AgentConfig {
   additionalContextGlobs: string[];
 }
 
+export interface ModelTemplate {
+  id: string;
+  label: string;
+  description: string;
+  defaults: Partial<ChatModel>;
+}
+
+export interface ConfigUiServerHandle {
+  server: import('node:http').Server;
+  port: number;
+  url: string;
+  close(): Promise<void>;
+}
+
 export interface DiffChunk {
   filePath: string;
   hunks: string[];
@@ -92,3 +106,12 @@ export function runModel(model: ChatModel, prompt: string): Promise<string>;
 export function getDiffChunks(options: { commitRange: string; staged?: boolean }): DiffChunk[];
 
 export function getFileContent(repoRoot: string, relativePath: string): string | null;
+
+export const MODEL_TEMPLATES: ModelTemplate[];
+
+export function findModelTemplate(id: string): ModelTemplate | undefined;
+
+export function startConfigUiServer(
+  manager: ConfigManager,
+  options?: { host?: string; port?: number }
+): Promise<ConfigUiServerHandle>;

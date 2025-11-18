@@ -6,65 +6,6 @@ async function loadCore(): Promise<CoreModule> {
   return import('acr-agent-core/dist/index.js');
 }
 
-interface ModelTemplate {
-  id: string;
-  label: string;
-  description: string;
-  defaults: Record<string, unknown>;
-}
-
-const MODEL_TEMPLATES: ModelTemplate[] = [
-  {
-    id: 'openai-chat',
-    label: 'OpenAI Chat Completions',
-    description: 'HTTPS JSON request with bearer auth and chat-style payload',
-    defaults: {
-      kind: 'online',
-      name: 'OpenAI Chat (gpt-4o-mini)',
-      endpoint: 'https://api.openai.com/v1/chat/completions',
-      method: 'POST',
-      bodyTemplate: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"{{prompt}}"}]}',
-      responsePath: 'choices.0.message.content',
-      headers: {
-        Authorization: 'Bearer {{env:OPENAI_API_KEY}}'
-      }
-    }
-  },
-  {
-    id: 'generic-http',
-    label: 'Generic HTTP JSON',
-    description: 'Minimal JSON POST with prompt interpolation',
-    defaults: {
-      kind: 'online',
-      method: 'POST',
-      bodyTemplate: '{"input":"{{prompt}}"}',
-      responsePath: 'output'
-    }
-  },
-  {
-    id: 'local-stdin',
-    label: 'Local CLI (stdin)',
-    description: 'Runs a local executable and streams the prompt to stdin',
-    defaults: {
-      kind: 'offline',
-      command: './review.sh',
-      promptMode: 'stdin',
-      promptTemplate: '{{prompt}}'
-    }
-  },
-  {
-    id: 'local-argument',
-    label: 'Local CLI (argument)',
-    description: 'Runs a local executable and injects the prompt as an argument',
-    defaults: {
-      kind: 'offline',
-      command: './review.sh',
-      promptMode: 'argument',
-      promptTemplate: '{{prompt}}'
-    }
-  }
-];
-
 async function ensureWorkspaceFolder() {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
@@ -101,6 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const core = await loadCore();
         const manager = await ensureConfigManager();
+        const templates = core.MODEL_TEMPLATES ?? [];
         const config = await manager.load();
         const id = await vscode.window.showInputBox({ prompt: 'Model id', placeHolder: 'gpt-4' });
         if (!id) return;
@@ -109,7 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (!existing) {
           const templatePick = await vscode.window.showQuickPick(
             [
-              ...MODEL_TEMPLATES.map((template) => ({
+              ...templates.map((template) => ({
                 label: template.label,
                 description: template.description,
                 template
@@ -322,7 +264,36 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  context.subscriptions.push(configureDisposable, reviewDisposable);
+  const uiDisposable = vscode.commands.registerCommand('acrAgent.openVisualConfigurator', async () => {
+    try {
+      const core = await loadCore();
+      const manager = await ensureConfigManager();
+      const handle = await core.startConfigUiServer(manager, { host: '127.0.0.1', port: 0 });
+      const disposeHandle = async () => {
+        try {
+          await handle.close();
+        } catch {
+          // ignore shutdown errors
+        }
+      };
+      context.subscriptions.push({ dispose: disposeHandle });
+      await vscode.env.openExternal(vscode.Uri.parse(handle.url));
+      const choice = await vscode.window.showInformationMessage(
+        `ACR Agent configurator running at ${handle.url}`,
+        'Open again',
+        'Stop server'
+      );
+      if (choice === 'Open again') {
+        await vscode.env.openExternal(vscode.Uri.parse(handle.url));
+      } else if (choice === 'Stop server') {
+        await disposeHandle();
+      }
+    } catch (error) {
+      vscode.window.showErrorMessage((error as Error).message);
+    }
+  });
+
+  context.subscriptions.push(configureDisposable, reviewDisposable, uiDisposable);
 }
 
 export function deactivate() {}

@@ -29,16 +29,22 @@ flowchart LR
         Runner[Model Runner]
         CLI[CLI / Interactive Wizard]
         Templates[Model Template Catalog]
+        VisualUI[Visual Configurator Server]
     end
 
+    Browser[Browser UI]
     Git[(Git Repository)]
     Models[(Online / Offline Models)]
 
     VSCode -->|Shells CLI| CLI
+    VSCode -->|Opens dashboard| VisualUI
     GoLand -->|Shells CLI| CLI
+    Browser -->|HTTP| VisualUI
     CLI --> Config
     CLI --> Review
     CLI --> Templates
+    VisualUI --> Config
+    VisualUI --> Templates
     Review --> Context
     Review --> Git
     Review --> Runner
@@ -53,12 +59,17 @@ sequenceDiagram
     participant Dev as Developer
     participant IDE
     participant CLI
+    participant UI as Visual UI Server
+    participant Config
     participant Git
     participant Model
 
     Dev->>CLI: `acr-agent configure`
     CLI-->>Dev: Offer model templates (optional)
     CLI->>Config: Persist models/prompts (.acr-agent/config.json)
+    Dev->>UI: `acr-agent ui` / VS Code "Launch Visual Configurator"
+    UI->>Config: Read & write config via REST API
+    UI-->>Dev: Browser renders forms & feedback
     Dev->>IDE: Trigger review (command or commit)
     IDE->>CLI: `acr-agent review --range …`
     CLI->>Config: Load active model & prompt
@@ -82,6 +93,10 @@ graph TD
     Runner -->|online| Fetch[HTTP request]
     Runner -->|offline| Process[Spawn executable]
     Context --> Glob[walkDirectory + glob match]
+    UICommand[UI Server Command] --> VisualServer[startConfigUiServer]
+    VisualServer --> RestHandlers[REST routes]
+    RestHandlers --> ConfigManager
+    RestHandlers --> TemplateCatalog
 ```
 
 ## User Use Cases
@@ -90,6 +105,8 @@ graph TD
 flowchart LR
     Configure[Configure models & prompts via wizard]
     Template[Select curated model template]
+    Visual[Launch visual configurator]
+    BrowserEdit[Edit config in browser]
     ManualReview[Run manual review in terminal or VS Code]
     Inspect[Inspect summary & findings]
     Decide[Accept or reject suggestions]
@@ -99,6 +116,7 @@ flowchart LR
     Outcome[Proceed / Cancel commit]
 
     Configure --> Template --> ManualReview --> Inspect --> Decide
+    Configure --> Visual --> BrowserEdit --> ManualReview
     Template --> AutoReview
     Configure --> AutoReview --> Commit --> Dialog --> Outcome
 ```
@@ -176,6 +194,27 @@ The interactive wizard and `add-model` CLI both surface curated templates so you
 | `local-argument` | Offline | Local executable taking prompt argument | Injects prompt as final CLI argument with `./review.sh` placeholder. |
 
 Both the VS Code extension and GoLand plugin reuse these templates by calling into the shared CLI, so selections stay consistent across tools.
+
+### Visual configuration dashboard
+
+For teams that prefer a point-and-click workflow, launch the zero-dependency dashboard with either the CLI or the VS Code command palette:
+
+```bash
+# Start on port 4173 and automatically open the browser
+node core/dist/cli.js ui --port 4173
+
+# Run headlessly (useful for remote dev servers)
+node core/dist/cli.js ui --host 0.0.0.0 --open=false
+```
+
+Once running, visit the printed URL to:
+
+1. Create or edit models with form-based inputs and optional template application.
+2. Switch active models/prompts and delete outdated entries.
+3. Manage prompt personas with live previews.
+4. Adjust context glob patterns via a multi-line editor.
+
+VS Code exposes the same experience via **ACR Agent: Launch Visual Configurator**, which spawns the embedded server and opens your default browser. Stop the server at any time from the in-editor notification or with `Ctrl+C` in the terminal where the CLI was started.
 
 ### Prompts & review execution
 

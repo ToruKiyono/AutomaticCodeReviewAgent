@@ -10,7 +10,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:acrAgent.configureModels",
-    "onCommand:acrAgent.runReview"
+    "onCommand:acrAgent.runReview",
+    "onCommand:acrAgent.openVisualConfigurator"
   ],
   "main": "dist/extension.js",
   "scripts": {
@@ -34,6 +35,10 @@
       {
         "command": "acrAgent.runReview",
         "title": "ACR Agent: Review Latest Commit"
+      },
+      {
+        "command": "acrAgent.openVisualConfigurator",
+        "title": "ACR Agent: Launch Visual Configurator"
       }
     ],
     "configuration": {

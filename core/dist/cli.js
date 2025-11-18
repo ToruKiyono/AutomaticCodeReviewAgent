@@ -1,69 +1,15 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { ConfigManager } from './config.js';
 import { ReviewService } from './reviewService.js';
+import { startConfigUiServer } from './uiServer.js';
+import { MODEL_TEMPLATES, findModelTemplate } from './templates.js';
 
 const cwd = process.cwd();
 const manager = new ConfigManager(cwd);
 const reviewService = new ReviewService(manager, cwd);
-
-const MODEL_TEMPLATES = [
-  {
-    id: 'openai-chat',
-    label: 'OpenAI Chat Completions',
-    description: 'HTTPS JSON request with bearer auth and chat-style payload',
-    defaults: {
-      kind: 'online',
-      name: 'OpenAI Chat (gpt-4o-mini)',
-      endpoint: 'https://api.openai.com/v1/chat/completions',
-      method: 'POST',
-      bodyTemplate: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"{{prompt}}"}]}',
-      responsePath: 'choices.0.message.content',
-      headers: {
-        Authorization: 'Bearer {{env:OPENAI_API_KEY}}'
-      }
-    }
-  },
-  {
-    id: 'generic-http',
-    label: 'Generic HTTP JSON',
-    description: 'Minimal JSON POST with prompt interpolation',
-    defaults: {
-      kind: 'online',
-      method: 'POST',
-      bodyTemplate: '{"input":"{{prompt}}"}',
-      responsePath: 'output'
-    }
-  },
-  {
-    id: 'local-stdin',
-    label: 'Local CLI (stdin)',
-    description: 'Runs a local executable and streams the prompt to stdin',
-    defaults: {
-      kind: 'offline',
-      command: './review.sh',
-      promptMode: 'stdin',
-      promptTemplate: '{{prompt}}'
-    }
-  },
-  {
-    id: 'local-argument',
-    label: 'Local CLI (argument)',
-    description: 'Runs a local executable and injects the prompt as an argument',
-    defaults: {
-      kind: 'offline',
-      command: './review.sh',
-      args: [],
-      promptMode: 'argument',
-      promptTemplate: '{{prompt}}'
-    }
-  }
-];
-
-function findModelTemplate(id) {
-  return MODEL_TEMPLATES.find((template) => template.id === id);
-}
 
 async function chooseModelTemplate(initialId) {
   console.log('\nModel templates:');
@@ -142,6 +88,36 @@ async function promptYesNo(question, defaultValue = true) {
     .toLowerCase();
   if (!choice) return defaultValue;
   return choice.startsWith('y');
+}
+
+function parseBoolean(value, defaultValue) {
+  if (value === undefined) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  const normalised = String(value).trim().toLowerCase();
+  if (['false', '0', 'no', 'off'].includes(normalised)) return false;
+  if (['true', '1', 'yes', 'on'].includes(normalised)) return true;
+  return defaultValue;
+}
+
+function openBrowser(url) {
+  const platform = process.platform;
+  const command =
+    platform === 'darwin'
+      ? 'open'
+      : platform === 'win32'
+      ? 'cmd'
+      : 'xdg-open';
+  const args = platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  return new Promise((resolve, reject) => {
+    try {
+      const child = spawn(command, args, { stdio: 'ignore', detached: true });
+      child.on('error', reject);
+      child.unref();
+      resolve();
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 async function interactiveModelEditor(existing, presetId) {
@@ -553,8 +529,41 @@ async function handleSetActive(type, id) {
   }
 }
 
+async function handleUi(flags) {
+  const host = typeof flags.host === 'string' ? flags.host : '127.0.0.1';
+  const requestedPort =
+    typeof flags.port === 'number'
+      ? flags.port
+      : typeof flags.port === 'string'
+      ? Number.parseInt(flags.port, 10)
+      : undefined;
+  const shouldOpen = parseBoolean(flags.open, true);
+  const uiHandle = await startConfigUiServer(manager, { host, port: requestedPort });
+  console.log(`Visual configurator running at ${uiHandle.url}`);
+  if (shouldOpen) {
+    try {
+      await openBrowser(uiHandle.url);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('Unable to open a browser automatically:', message);
+    }
+  }
+  console.log('Press Ctrl+C to stop the server.');
+
+  await new Promise((resolve) => {
+    const shutdown = async () => {
+      process.off('SIGINT', shutdown);
+      process.off('SIGTERM', shutdown);
+      await uiHandle.close().catch(() => {});
+      resolve();
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  });
+}
+
 function printHelp() {
-  console.log(`Usage: acr-agent <command> [options]\n\nCommands:\n  configure                 Interactive configuration wizard\n  add-model [flags]         Add or update a model configuration (--preset for templates)\n  list-models               Show configured models\n  remove-model <id>         Delete a model\n  set-model <id>            Make a model active\n  add-prompt [flags]        Add or update a prompt\n  list-prompts              Show configured prompts\n  remove-prompt <id>        Delete a prompt\n  set-prompt <id>           Make a prompt active\n  review [flags]            Run a review for a commit range\n\nTemplates:\n  openai-chat, generic-http, local-stdin, local-argument\n\nExamples:\n  acr-agent configure\n  acr-agent add-model --preset local-stdin --id local --name "Local reviewer" --command ./review.sh\n  acr-agent review --range HEAD --staged --format json\n`);
+  console.log(`Usage: acr-agent <command> [options]\n\nCommands:\n  configure                 Interactive configuration wizard\n  ui [--port 4173]          Launch the visual configuration dashboard\n  add-model [flags]         Add or update a model configuration (--preset for templates)\n  list-models               Show configured models\n  remove-model <id>         Delete a model\n  set-model <id>            Make a model active\n  add-prompt [flags]        Add or update a prompt\n  list-prompts              Show configured prompts\n  remove-prompt <id>        Delete a prompt\n  set-prompt <id>           Make a prompt active\n  review [flags]            Run a review for a commit range\n\nTemplates:\n  openai-chat, generic-http, local-stdin, local-argument\n\nExamples:\n  acr-agent ui --open=false\n  acr-agent configure\n  acr-agent add-model --preset local-stdin --id local --name "Local reviewer" --command ./review.sh\n  acr-agent review --range HEAD --staged --format json\n`);
 }
 
 async function main() {
@@ -566,6 +575,9 @@ async function main() {
     switch (command) {
       case 'configure':
         await handleConfigure();
+        break;
+      case 'ui':
+        await handleUi({ ...flags });
         break;
       case 'add-model':
         await handleAddModel({ ...flags });
