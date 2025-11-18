@@ -242,11 +242,18 @@ format.
 
 ## VS Code Extension
 
-1. From `vscode-extension`, run `npm install` and `npm run build`. (The extension depends on TypeScript tooling; these packages ma
-y need to be mirrored in restricted environments.)
-2. Use **ACR Agent: Configure Models** to invoke the shared wizard logic through VS Code prompts, including a curated template picker for online and offline models.
-3. Trigger **ACR Agent: Review Latest Commit**; the extension calls the CLI with `--format json` and streams the findings into the
-“ACR Agent Review” output channel.
+1. From `vscode-extension`, run `npm install` and `npm run build`. (The extension depends on TypeScript tooling; these packages may need to be mirrored in restricted environments.)
+2. Use **ACR Agent: Configure Models** to invoke the shared wizard logic through VS Code prompts, including a curated template picker for online and offline models. The command now binds directly to the strongly typed `ChatModel` definition exported by the core runtime, so every saved model matches the same schema consumed by the CLI and GoLand plugin.
+3. Trigger **ACR Agent: Review Latest Commit**; the extension calls the CLI with `--format json` and streams the findings into the “ACR Agent Review” output channel.
+
+### Calling configured models
+
+Once at least one model is configured, you can exercise it in two ways:
+
+1. **VS Code command palette** – Run **ACR Agent: Review Latest Commit** (or bind it to a key) to execute the active model against `HEAD~1..HEAD`. Provide an optional ad-hoc prompt override when the command asks for it.
+2. **Core CLI** – From the workspace root, call `node core/dist/cli.js review --range <commit-range>` (for example `HEAD~1..HEAD` or `HEAD --staged`). The CLI loads the same `.acr-agent/config.json`, selects the active model, and invokes the online/offline runner automatically.
+
+In both cases the shared configuration and type-checked schema guarantee that any model configured inside VS Code is immediately runnable from the terminal workflow without manual edits.
 
 ## GoLand Plugin
 

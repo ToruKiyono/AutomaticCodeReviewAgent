@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { ChatModel, ModelKind } from 'acr-agent-core/dist/index.js';
 
 type CoreModule = typeof import('acr-agent-core/dist/index.js');
 
@@ -47,7 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
         const id = await vscode.window.showInputBox({ prompt: 'Model id', placeHolder: 'gpt-4' });
         if (!id) return;
         const existing = config.models.find((model) => model.id === id);
-        let templateDefaults: Record<string, unknown> = {};
+        let templateDefaults: Partial<ChatModel> = {};
         if (!existing) {
           const templatePick = await vscode.window.showQuickPick(
             [
@@ -69,7 +70,9 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        const model: Record<string, unknown> = existing ? { ...existing } : { ...templateDefaults };
+        const model: ChatModel = existing
+          ? { ...existing }
+          : ({ ...templateDefaults } as ChatModel);
         model.id = id;
 
         const name = await vscode.window.showInputBox({
@@ -84,9 +87,9 @@ export function activate(context: vscode.ExtensionContext) {
           typeof model.kind === 'string' && (model.kind === 'online' || model.kind === 'offline')
             ? (model.kind as string)
             : 'online';
-        const kind = await vscode.window.showQuickPick(['online', 'offline'], {
+        const kind = (await vscode.window.showQuickPick(['online', 'offline'], {
           placeHolder: `Model kind (current: ${currentKind})`
-        });
+        })) as ModelKind | undefined;
         if (!kind) return;
         model.kind = kind;
 
@@ -164,9 +167,9 @@ export function activate(context: vscode.ExtensionContext) {
           } else if (existingArgs?.length) {
             model.args = [];
           }
-          const promptMode = await vscode.window.showQuickPick(['stdin', 'argument'], {
+          const promptMode = (await vscode.window.showQuickPick(['stdin', 'argument'], {
             placeHolder: `Prompt delivery (current: ${model.promptMode ?? 'stdin'})`
-          });
+          })) as ('stdin' | 'argument') | undefined;
           if (!promptMode) return;
           model.promptMode = promptMode;
           if (promptMode === 'argument') {
