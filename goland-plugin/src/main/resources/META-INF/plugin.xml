@@ -1,0 +1,17 @@
+<idea-plugin>
+    <id>com.acr.agent.goland</id>
+    <name>Automatic Code Review Agent</name>
+    <vendor email="support@example.com">ACR</vendor>
+    <description>
+        <![CDATA[
+        Integrates the Automatic Code Review Agent with GoLand, enabling configurable chat models and commit-aware reviews.
+        ]]>
+    </description>
+    <depends>com.intellij.modules.go</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <projectConfigurable instance="com.acr.agent.settings.ACRAgentConfigurable" displayName="ACR Agent" id="acr-agent-settings" />
+        <checkinHandlerFactory implementation="com.acr.agent.review.ACRAgentCheckinHandlerFactory" />
+    </extensions>
+</idea-plugin>

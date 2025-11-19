@@ -1,0 +1,15 @@
+{
+  "name": "acr-agent-core",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Core runtime for the Automatic Code Review Agent.",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "acr-agent": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./dist/*": "./dist/*.js"
+  }
+}
