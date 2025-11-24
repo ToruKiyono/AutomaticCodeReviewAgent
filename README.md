@@ -35,6 +35,7 @@ flowchart LR
         CLI[CLI / Interactive Wizard]
         Templates[Model Template Catalog]
         VisualUI[Visual Configurator Server]
+        TestConsole[Model Test API]
     end
 
     Browser[Browser UI]
@@ -48,8 +49,12 @@ flowchart LR
     CLI --> Config
     CLI --> Review
     CLI --> Templates
+    CLI --> TestConsole
     VisualUI --> Config
     VisualUI --> Templates
+    VisualUI --> TestConsole
+    TestConsole --> Config
+    TestConsole --> Runner
     Review --> Context
     Review --> Git
     Review --> Runner
@@ -75,6 +80,14 @@ sequenceDiagram
     Dev->>UI: `acr-agent ui` / VS Code "Launch Visual Configurator"
     UI->>Config: Read & write config via REST API
     UI-->>Dev: Browser renders forms & feedback
+    Dev->>UI: Submit Model Test form
+    UI->>Config: Load active model & prompt
+    UI->>Model: `/api/test-model` builds prompt + calls runner
+    Model-->>UI: Return sample response
+    Dev->>CLI: `acr-agent test-model --prompt "..."`
+    CLI->>Config: Load config & templates
+    CLI->>Model: Send rendered prompt directly
+    Model-->>CLI: Emit sample response preview
     Dev->>IDE: Trigger review (command or commit)
     IDE->>CLI: `acr-agent review --range …`
     CLI->>Config: Load active model & prompt
@@ -91,10 +104,14 @@ sequenceDiagram
 graph TD
     CLICommand[CLI Command] --> ReviewEntry[ReviewService.review]
     CLICommand --> TemplateCatalog[chooseModelTemplate]
+    CLICommand --> TestCommand[handleTestModel]
     ReviewEntry --> Diff[getDiffChunks]
     ReviewEntry --> Context[collectContext]
-    ReviewEntry --> Prompt[renderReviewContext]
+    ReviewEntry --> PromptBuilder[buildPromptFromConfig]
+    PromptBuilder --> Prompt[renderReviewContext]
     ReviewEntry --> Runner[runModel]
+    TestCommand --> PromptBuilder
+    TestCommand --> Runner
     Runner -->|online| Fetch[HTTP request]
     Runner -->|offline| Process[Spawn executable]
     Context --> Glob[walkDirectory + glob match]
@@ -102,6 +119,10 @@ graph TD
     VisualServer --> RestHandlers[REST routes]
     RestHandlers --> ConfigManager
     RestHandlers --> TemplateCatalog
+    RestHandlers --> TestRoute[/api/test-model]
+    TestRoute --> PromptBuilder
+    TestRoute --> Runner
+    TestRoute --> ConfigManager
 ```
 
 ## User Use Cases
@@ -112,6 +133,7 @@ flowchart LR
     Template[Select curated model template]
     Visual[Launch visual configurator]
     BrowserEdit[Edit config in browser]
+    TestModel[Test model via CLI / UI]
     ManualReview[Run manual review in terminal or VS Code]
     Inspect[Inspect summary & findings]
     Decide[Accept or reject suggestions]
@@ -121,7 +143,8 @@ flowchart LR
     Outcome[Proceed / Cancel commit]
 
     Configure --> Template --> ManualReview --> Inspect --> Decide
-    Configure --> Visual --> BrowserEdit --> ManualReview
+    Configure --> TestModel --> ManualReview
+    Configure --> Visual --> BrowserEdit --> TestModel
     Template --> AutoReview
     Configure --> AutoReview --> Commit --> Dialog --> Outcome
 ```
@@ -208,6 +231,9 @@ node core/dist/cli.js ui --port 4173
 
 # Run headlessly (useful for remote dev servers)
 node core/dist/cli.js ui --host 0.0.0.0 --open=false
+
+# Target a different repository without leaving your current shell
+node core/dist/cli.js ui --repo ../payment-service --open=false
 ```
 
 Once running, visit the printed URL to:
@@ -216,8 +242,25 @@ Once running, visit the printed URL to:
 2. Switch active models/prompts and delete outdated entries.
 3. Manage prompt personas with live previews.
 4. Adjust context glob patterns via a multi-line editor.
+5. Paste a diff snippet into **Model Test Console** to validate connectivity before running real reviews. The header shows which repository the server is bound to so you can confirm you are testing the right workspace.
 
 VS Code exposes the same experience via **ACR Agent: Launch Visual Configurator**, which spawns the embedded server and opens your default browser. Stop the server at any time from the in-editor notification or with `Ctrl+C` in the terminal.
+
+### Testing Models (CLI & UI)
+
+Before wiring the agent into CI or IDE hooks, run a dry run to ensure the configured endpoint or local executable behaves as expected.
+
+```bash
+# Send an inline diff snippet to the active model
+node core/dist/cli.js test-model --prompt "Ping" --diff "@@ file.go@@\n+fmt.Println(\"hello\")"
+
+# Load a diff from disk and target another repository without changing directories
+node core/dist/cli.js test-model --repo ../payment-service --diff-file /tmp/change.patch
+```
+
+The command prints the rendered prompt (so you can confirm templating) followed by the model’s response. Provide `--model <id>` to exercise a non-active configuration.
+
+Prefer a visual confirmation? Open the dashboard via `acr-agent ui` or the VS Code command and scroll to **Model Test Console**. Select a model, paste a diff or plain text, and press **Run test**. The UI reuses the same prompt builder and runner as the CLI test command, so the response mirrors a real review.
 
 ### Prompts & Review Execution
 
@@ -234,9 +277,14 @@ node core/dist/cli.js review --range HEAD --staged --format json
 
 # Override the active model or prompt for a single run
 ACR_AGENT_MODEL=local-llm node core/dist/cli.js review --range HEAD~1..HEAD --prompt "Check for race conditions."
+
+# Review a different repository without leaving your current terminal
+node core/dist/cli.js review --repo ../data-plane --range main~1..main
 ```
 
 The review command prints either a human-readable summary or structured JSON (`--format json`). IDE integrations consume the JSON format.
+
+Pass `--repo <path>` to both `review` and `test-model` when you need to inspect another Git repository from a centralized workspace (for example, running reviews for multiple microservices from a monorepo of scripts).
 
 ## VS Code Extension
 
@@ -245,6 +293,7 @@ Use the shared CLI under the hood so every review path respects the same configu
 1. From `vscode-extension`, run `npm install` and `npm run build`. (The extension depends on TypeScript tooling; these packages may need to be mirrored in restricted environments.)
 2. Use **ACR Agent: Configure Models** to invoke the shared wizard logic through VS Code prompts, including a curated template picker for online and offline models. The command binds directly to the strongly typed `ChatModel` definition exported by the core runtime, so every saved model matches the schema consumed by the CLI and GoLand plugin.
 3. Trigger **ACR Agent: Review Latest Commit**; the extension calls the CLI with `--format json` and streams the findings into the “ACR Agent Review” output channel.
+4. Open whichever Git repository you want to review as the VS Code workspace. The extension shells out from the currently opened folder, so switching workspaces (or multi-root folders) lets you audit completely different repositories without reinstalling or reconfiguring the plugin. Use the CLI’s `--repo` flag when orchestrating reviews from scripts outside the IDE.
 
 ### Calling Configured Models
 
@@ -353,6 +402,7 @@ flowchart LR
         CLI[CLI / Interactive Wizard]
         Templates[Model Template Catalog]
         VisualUI[Visual Configurator Server]
+        TestConsole[Model Test API]
     end
 
     Browser[Browser UI]
@@ -366,8 +416,12 @@ flowchart LR
     CLI --> Config
     CLI --> Review
     CLI --> Templates
+    CLI --> TestConsole
     VisualUI --> Config
     VisualUI --> Templates
+    VisualUI --> TestConsole
+    TestConsole --> Config
+    TestConsole --> Runner
     Review --> Context
     Review --> Git
     Review --> Runner
@@ -393,6 +447,14 @@ sequenceDiagram
     Dev->>UI: `acr-agent ui` / VS Code “Launch Visual Configurator”
     UI->>Config: 通过 REST API 读写配置
     UI-->>Dev: 浏览器呈现表单与反馈
+    Dev->>UI: 在可视化界面发起模型测试
+    UI->>Config: 读取激活模型与提示词
+    UI->>Model: `/api/test-model` 生成提示并调用运行器
+    Model-->>UI: 返回示例输出
+    Dev->>CLI: `acr-agent test-model --prompt "..."`
+    CLI->>Config: 读取配置与模板
+    CLI->>Model: 直接调用模型运行器
+    Model-->>CLI: 输出测试响应
     Dev->>IDE: 通过命令或提交触发审查
     IDE->>CLI: `acr-agent review --range …`
     CLI->>Config: 读取激活的模型与提示词
@@ -409,10 +471,14 @@ sequenceDiagram
 graph TD
     CLICommand[CLI Command] --> ReviewEntry[ReviewService.review]
     CLICommand --> TemplateCatalog[chooseModelTemplate]
+    CLICommand --> TestCommand[handleTestModel]
     ReviewEntry --> Diff[getDiffChunks]
     ReviewEntry --> Context[collectContext]
-    ReviewEntry --> Prompt[renderReviewContext]
+    ReviewEntry --> PromptBuilder[buildPromptFromConfig]
+    PromptBuilder --> Prompt[renderReviewContext]
     ReviewEntry --> Runner[runModel]
+    TestCommand --> PromptBuilder
+    TestCommand --> Runner
     Runner -->|online| Fetch[HTTP request]
     Runner -->|offline| Process[Spawn executable]
     Context --> Glob[walkDirectory + glob match]
@@ -420,6 +486,10 @@ graph TD
     VisualServer --> RestHandlers[REST routes]
     RestHandlers --> ConfigManager
     RestHandlers --> TemplateCatalog
+    RestHandlers --> TestRoute[/api/test-model]
+    TestRoute --> PromptBuilder
+    TestRoute --> Runner
+    TestRoute --> ConfigManager
 ```
 
 ## 用户视角用例
@@ -430,6 +500,7 @@ flowchart LR
     Template[Select curated model template]
     Visual[Launch visual configurator]
     BrowserEdit[Edit config in browser]
+    TestModel[Test model via CLI / UI]
     ManualReview[Run manual review in terminal or VS Code]
     Inspect[Inspect summary & findings]
     Decide[Accept or reject suggestions]
@@ -439,7 +510,8 @@ flowchart LR
     Outcome[Proceed / Cancel commit]
 
     Configure --> Template --> ManualReview --> Inspect --> Decide
-    Configure --> Visual --> BrowserEdit --> ManualReview
+    Configure --> TestModel --> ManualReview
+    Configure --> Visual --> BrowserEdit --> TestModel
     Template --> AutoReview
     Configure --> AutoReview --> Commit --> Dialog --> Outcome
 ```
@@ -520,6 +592,9 @@ VS Code 与 GoLand 通过共享 CLI 复用这些模板，确保多端配置一�
 ```bash
 node core/dist/cli.js ui --port 4173
 node core/dist/cli.js ui --host 0.0.0.0 --open=false
+
+# 不切换目录直接操作其他仓库的配置
+node core/dist/cli.js ui --repo ../payment-service --open=false
 ```
 
 打开提示的地址即可：
@@ -528,8 +603,25 @@ node core/dist/cli.js ui --host 0.0.0.0 --open=false
 2. 切换当前模型或提示词并删除旧配置。
 3. 管理提示词人格并实时预览。
 4. 在多行编辑器中维护补充上下文的 glob 列表。
+5. 在 **Model Test Console** 粘贴 diff 或文本，先验证模型连通性再投入真实审查。页眉会标记服务器绑定的仓库路径，方便确认当前测试的是哪个工作区。
 
 VS Code 提供 **ACR Agent: Launch Visual Configurator** 命令，可自动启动服务器并打开默认浏览器，可在通知或终端中随时停止。
+
+### 模型测试（CLI / 可视化）
+
+在接入 CI 或 IDE 之前，可以用快速测试命令确认在线 / 离线模型配置是否可用：
+
+```bash
+# 将内联 diff 发送到当前激活模型
+node core/dist/cli.js test-model --prompt "Ping" --diff "@@ file.go@@\n+fmt.Println(\"hello\")"
+
+# 指定其他仓库并从文件读取 diff
+node core/dist/cli.js test-model --repo ../payment-service --diff-file /tmp/change.patch
+```
+
+命令会先打印渲染后的完整提示词，随后输出模型回复，便于确认模板变量与 HTTP / 本地命令是否生效。也可以通过 `--model <id>` 测试非激活模型。
+
+若偏好可视化界面，可在控制台中打开 **Model Test Console**，选择模型、填写 diff 或普通文本，点击 **Run test** 即可。该面板与 CLI `test-model` 共享同一套 prompt 构建与运行逻辑，反馈内容与真实审查完全一致。
 
 ### 提示词与审查执行
 
@@ -539,9 +631,14 @@ node core/dist/cli.js list-models
 node core/dist/cli.js list-prompts
 node core/dist/cli.js review --range HEAD --staged --format json
 ACR_AGENT_MODEL=local-llm node core/dist/cli.js review --range HEAD~1..HEAD --prompt "Check for race conditions."
+
+# 不切换目录直接审查其他仓库
+node core/dist/cli.js review --repo ../data-plane --range main~1..main
 ```
 
 审查命令可输出可读文本或 JSON（`--format json`），IDE 插件默认读取 JSON。
+
+`review` 与 `test-model` 均支持 `--repo <path>`，便于在脚本或自动化任务中指定任意 Git 仓库，无需逐个进入对应目录。
 
 ## VS Code 扩展
 
@@ -550,6 +647,7 @@ VS Code 扩展在内部复用 CLI，保证所有审查路径共享同一份配�
 1. 进入 `vscode-extension` 执行 `npm install`、`npm run build`。如网络受限，可自建 npm 镜像。
 2. 执行 **ACR Agent: Configure Models** 触发 VS Code 提示链，直接调用核心定义的 `ChatModel` 类型，确保保存的模型与 CLI / GoLand 共用的 schema 完全一致。
 3. 运行 **ACR Agent: Review Latest Commit**，扩展会以 `--format json` 调用 CLI，并将结果流式写入 “ACR Agent Review” 输出面板。
+4. 将需要审查的 Git 仓库作为 VS Code 工作区打开。扩展始终在当前工作区目录下调用 CLI，因此切换工作区或使用多根目录即可审查不同项目；若在 IDE 外统一调度，可在 CLI 中使用 `--repo` 指定仓库路径。
 
 ### 调用已配置模型
 

@@ -1,15 +1,31 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { resolve } from 'node:path';
 import { ConfigManager } from './config.js';
-import { ReviewService } from './reviewService.js';
+import { ReviewService, buildPromptFromConfig } from './reviewService.js';
+import { runModel } from './modelRunner.js';
 import { startConfigUiServer } from './uiServer.js';
 import { MODEL_TEMPLATES, findModelTemplate } from './templates.js';
 
 const cwd = process.cwd();
 const manager = new ConfigManager(cwd);
 const reviewService = new ReviewService(manager, cwd);
+
+function createContextForRepo(repoPath) {
+  if (!repoPath) {
+    return { manager, reviewService, root: cwd };
+  }
+  const resolved = resolve(repoPath);
+  if (resolved === cwd) {
+    return { manager, reviewService, root: cwd };
+  }
+  const customManager = new ConfigManager(resolved);
+  const customReview = new ReviewService(customManager, resolved);
+  return { manager: customManager, reviewService: customReview, root: resolved };
+}
 
 async function chooseModelTemplate(initialId) {
   console.log('\nModel templates:');
@@ -450,8 +466,10 @@ async function handleReview(flags) {
   const overridePrompt = flags.prompt;
   const modelId = flags.model;
   const format = (flags.format ?? 'human').toLowerCase();
+  const repoPath = typeof flags.repo === 'string' ? flags.repo : undefined;
 
-  const result = await reviewService.review({ commitRange, overridePrompt, staged, modelId });
+  const { reviewService: repoReview } = createContextForRepo(repoPath);
+  const result = await repoReview.review({ commitRange, overridePrompt, staged, modelId });
 
   if (format === 'json') {
     console.log(JSON.stringify(result, null, 2));
@@ -477,6 +495,57 @@ async function handleReview(flags) {
       }
     }
   }
+}
+
+async function handleTestModel(flags) {
+  const promptOverride = typeof flags.prompt === 'string' ? flags.prompt : undefined;
+  const repoPath = typeof flags.repo === 'string' ? flags.repo : undefined;
+  const modelId = typeof flags.model === 'string' ? flags.model : undefined;
+  const inlineDiff = typeof flags.diff === 'string' ? flags.diff : undefined;
+  const diffFile = typeof flags.diffFile === 'string' ? flags.diffFile : undefined;
+
+  const { manager: repoManager, root } = createContextForRepo(repoPath);
+  const config = await repoManager.load();
+  const effectiveModelId = modelId ?? process.env.ACR_AGENT_MODEL ?? config.activeModelId;
+  const model = config.models.find((item) => item.id === effectiveModelId) ?? config.models[0];
+  if (!model) {
+    throw new Error('No model configured. Use "acr-agent configure" to add one.');
+  }
+
+  let diffSnippet = inlineDiff;
+  if (!diffSnippet && diffFile) {
+    const filePath = resolve(diffFile);
+    diffSnippet = await readFile(filePath, 'utf8');
+  }
+
+  const diffLines = diffSnippet ? diffSnippet.split(/\r?\n/) : [];
+  const diff = diffLines.length
+    ? [
+        {
+          filePath: 'sample.patch',
+          hunks: diffLines
+        }
+      ]
+    : [
+        {
+          filePath: 'sample.patch',
+          hunks: ['@@ sample @@', '+function example() {', '+  return 42;', '+}']
+        }
+      ];
+
+  const context = {
+    repoRoot: root,
+    commitRange: 'TEST-RANGE',
+    diff,
+    supplementaryFiles: {}
+  };
+
+  const prompt = buildPromptFromConfig(config, context, promptOverride);
+  console.log('--- Prompt preview ---');
+  console.log(prompt);
+  console.log('--- Model response ---');
+  const output = await runModel(model, prompt);
+  console.log(output);
 }
 
 async function handleList(type) {
@@ -537,9 +606,18 @@ async function handleUi(flags) {
       : typeof flags.port === 'string'
       ? Number.parseInt(flags.port, 10)
       : undefined;
+  const repoContext =
+    typeof flags.repo === 'string' && flags.repo.trim().length > 0
+      ? createContextForRepo(flags.repo)
+      : { manager, root: cwd };
   const shouldOpen = parseBoolean(flags.open, true);
-  const uiHandle = await startConfigUiServer(manager, { host, port: requestedPort });
+  const uiHandle = await startConfigUiServer(repoContext.manager, {
+    host,
+    port: requestedPort,
+    workspaceRoot: repoContext.root
+  });
   console.log(`Visual configurator running at ${uiHandle.url}`);
+  console.log(`Target workspace: ${repoContext.root}`);
   if (shouldOpen) {
     try {
       await openBrowser(uiHandle.url);
@@ -563,7 +641,7 @@ async function handleUi(flags) {
 }
 
 function printHelp() {
-  console.log(`Usage: acr-agent <command> [options]\n\nCommands:\n  configure                 Interactive configuration wizard\n  ui [--port 4173]          Launch the visual configuration dashboard\n  add-model [flags]         Add or update a model configuration (--preset for templates)\n  list-models               Show configured models\n  remove-model <id>         Delete a model\n  set-model <id>            Make a model active\n  add-prompt [flags]        Add or update a prompt\n  list-prompts              Show configured prompts\n  remove-prompt <id>        Delete a prompt\n  set-prompt <id>           Make a prompt active\n  review [flags]            Run a review for a commit range\n\nTemplates:\n  openai-chat, generic-http, local-stdin, local-argument\n\nExamples:\n  acr-agent ui --open=false\n  acr-agent configure\n  acr-agent add-model --preset local-stdin --id local --name "Local reviewer" --command ./review.sh\n  acr-agent review --range HEAD --staged --format json\n`);
+  console.log(`Usage: acr-agent <command> [options]\n\nCommands:\n  configure                 Interactive configuration wizard\n  ui [--repo PATH --port 4173] Launch the visual configuration dashboard\n  add-model [flags]         Add or update a model configuration (--preset for templates)\n  list-models               Show configured models\n  remove-model <id>         Delete a model\n  set-model <id>            Make a model active\n  add-prompt [flags]        Add or update a prompt\n  list-prompts              Show configured prompts\n  remove-prompt <id>        Delete a prompt\n  set-prompt <id>           Make a prompt active\n  review [flags]            Run a review for a commit range (use --repo to target another repo)\n  test-model [flags]        Send a sample diff/prompt to a configured model\n\nTemplates:\n  openai-chat, generic-http, local-stdin, local-argument\n\nExamples:\n  acr-agent ui --repo ../other-repo --open=false\n  acr-agent configure\n  acr-agent add-model --preset local-stdin --id local --name "Local reviewer" --command ./review.sh\n  acr-agent review --range HEAD --staged --format json --repo ../other-service\n  acr-agent test-model --prompt "Quick sanity check"\n`);
 }
 
 async function main() {
@@ -623,6 +701,9 @@ async function main() {
         break;
       case 'review':
         await handleReview({ ...flags });
+        break;
+      case 'test-model':
+        await handleTestModel({ ...flags });
         break;
       case 'help':
       case undefined:

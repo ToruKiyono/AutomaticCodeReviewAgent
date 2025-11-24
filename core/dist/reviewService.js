@@ -36,6 +36,18 @@ function parseFindings(output) {
   return { summary, findings };
 }
 
+export function buildPromptFromConfig(config, context, overridePrompt) {
+  const promptConfig =
+    config.prompts.find((prompt) => prompt.id === config.activePromptId) ?? config.prompts[0];
+
+  const renderedContext = renderReviewContext(context);
+  const userPrompt = overridePrompt ?? promptConfig?.userPrompt ?? 'Review the provided diff.';
+  const systemPrompt =
+    promptConfig?.systemPrompt ?? 'You are an expert code reviewer. Identify issues and improvements.';
+
+  return `System: ${systemPrompt}\n\nUser: ${userPrompt}\n\nContext:\n${renderedContext}`;
+}
+
 export class ReviewService {
   constructor(configManager, repoRoot) {
     this.configManager = configManager;
@@ -44,7 +56,7 @@ export class ReviewService {
 
   async review({ commitRange, overridePrompt, staged = false, modelId }) {
     const config = await this.configManager.load();
-    const diff = getDiffChunks({ commitRange, staged });
+    const diff = getDiffChunks({ commitRange, staged, repoRoot: this.repoRoot });
     const supplementaryFiles = await collectContext(
       this.repoRoot,
       config,
@@ -58,7 +70,7 @@ export class ReviewService {
       supplementaryFiles
     };
 
-    const prompt = await this.#buildPrompt(config, context, overridePrompt);
+    const prompt = buildPromptFromConfig(config, context, overridePrompt);
     const effectiveModelId = modelId ?? process.env.ACR_AGENT_MODEL ?? config.activeModelId;
     const model = config.models.find((item) => item.id === effectiveModelId) ?? config.models[0];
     if (!model) {
@@ -67,17 +79,5 @@ export class ReviewService {
 
     const output = await runModel(model, prompt);
     return parseFindings(output);
-  }
-
-  async #buildPrompt(config, context, overridePrompt) {
-    const promptConfig =
-      config.prompts.find((prompt) => prompt.id === config.activePromptId) ?? config.prompts[0];
-
-    const renderedContext = renderReviewContext(context);
-    const userPrompt = overridePrompt ?? promptConfig?.userPrompt ?? 'Review the provided diff.';
-    const systemPrompt =
-      promptConfig?.systemPrompt ?? 'You are an expert code reviewer. Identify issues and improvements.';
-
-    return `System: ${systemPrompt}\n\nUser: ${userPrompt}\n\nContext:\n${renderedContext}`;
   }
 }

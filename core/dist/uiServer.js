@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
 import { MODEL_TEMPLATES } from './templates.js';
+import { buildPromptFromConfig } from './reviewService.js';
+import { runModel } from './modelRunner.js';
 
 const DASHBOARD_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -190,11 +192,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     padding-top: 0.75rem;
     margin-top: 0.25rem;
   }
+  .full-span {
+    grid-column: 1 / -1;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    overflow: auto;
+    font-size: 0.85rem;
+  }
 </style>
 </head>
 <body>
   <header>
     <h1>ACR Agent Visual Configurator</h1>
+    <div class="status-line" id="workspaceLine">Workspace: loading…</div>
     <div class="status-line" id="statusLine">Loading configuration…</div>
     <button type="button" id="refreshBtn">Refresh</button>
   </header>
@@ -303,13 +317,37 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <button type="button" id="saveGlobs" class="primary">Save globs</button>
       </div>
     </section>
+    <section class="full-span">
+      <h2>Model Test Console</h2>
+      <p>Paste a diff snippet or plain text to verify your model configuration before running real reviews.</p>
+      <form id="testForm" class="field-group">
+        <label>Model
+          <select id="testModelSelect" name="modelId"></select>
+        </label>
+        <label>Prompt override (optional)
+          <textarea id="testPromptInput" name="prompt" placeholder="Leave blank to reuse the active prompt"></textarea>
+        </label>
+        <label>Sample diff / context
+          <textarea id="testDiffInput" name="diff" rows="6" placeholder="@@ diff @@\n+fmt.Println(\"hello\")"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary">Run test</button>
+          <span id="testStatus" class="status-line">Ready</span>
+        </div>
+      </form>
+      <details id="testOutputWrapper">
+        <summary>Latest response</summary>
+        <pre id="testOutput">No tests run yet.</pre>
+      </details>
+    </section>
   </main>
   <div class="toast" id="toast"></div>
 <script>
 (function() {
   const templates = ${JSON.stringify(MODEL_TEMPLATES)};
-  const state = { config: null };
+  const state = { config: null, meta: null };
   const statusLine = document.getElementById('statusLine');
+  const workspaceLine = document.getElementById('workspaceLine');
   const modelList = document.getElementById('modelList');
   const promptList = document.getElementById('promptList');
   const newModelForm = document.getElementById('newModelForm');
@@ -317,6 +355,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   const templateSelect = document.getElementById('templateSelect');
   const globEditor = document.getElementById('globEditor');
   const toast = document.getElementById('toast');
+  const testForm = document.getElementById('testForm');
+  const testModelSelect = document.getElementById('testModelSelect');
+  const testPromptInput = document.getElementById('testPromptInput');
+  const testDiffInput = document.getElementById('testDiffInput');
+  const testStatus = document.getElementById('testStatus');
+  const testOutput = document.getElementById('testOutput');
+  const testOutputWrapper = document.getElementById('testOutputWrapper');
 
   for (const template of templates) {
     const option = document.createElement('option');
@@ -353,6 +398,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return response.json();
     }
     return response.text();
+  }
+
+  async function loadMeta() {
+    try {
+      const meta = await api('/api/meta');
+      state.meta = meta;
+      const label = meta && meta.workspaceRoot ? meta.workspaceRoot : '(unknown)';
+      workspaceLine.textContent = 'Workspace: ' + label;
+    } catch (error) {
+      workspaceLine.textContent = 'Workspace: unavailable';
+      showToast(error.message || 'Failed to load workspace details', true);
+    }
   }
 
   function escapeHtml(value) {
@@ -671,6 +728,31 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     globEditor.value = (state.config.additionalContextGlobs || []).join('\n');
+
+    testModelSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = state.config.activeModelId
+      ? 'Use active model (' + state.config.activeModelId + ')'
+      : 'No active model selected';
+    testModelSelect.appendChild(placeholder);
+    for (const model of state.config.models) {
+      const option = document.createElement('option');
+      option.value = model.id;
+      option.textContent = (model.name || model.id) + ' (' + model.id + ')';
+      if (state.config.activeModelId === model.id) {
+        option.textContent += ' • active';
+      }
+      testModelSelect.appendChild(option);
+    }
+
+    const disableTest = state.config.models.length === 0;
+    for (const control of testForm.querySelectorAll('input, textarea, select, button')) {
+      control.disabled = disableTest;
+    }
+    testStatus.textContent = disableTest
+      ? 'Add a model to enable testing.'
+      : 'Provide context and run a test.';
   }
 
   newModelForm.addEventListener('change', (event) => {
@@ -735,7 +817,32 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
   });
 
+  testForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    testStatus.textContent = 'Running test…';
+    try {
+      const payload = {
+        modelId: testModelSelect.value || undefined,
+        prompt: testPromptInput.value,
+        diff: testDiffInput.value
+      };
+      const result = await api('/api/test-model', { method: 'POST', body: payload });
+      testStatus.textContent = 'Response received at ' + new Date().toLocaleTimeString();
+      testOutput.textContent =
+        'Prompt:\n' +
+        result.prompt +
+        '\n\nResponse:\n' +
+        (result.output || '(empty response)');
+      testOutputWrapper.open = true;
+      showToast('Model responded successfully.');
+    } catch (error) {
+      testStatus.textContent = 'Test failed.';
+      showToast(error.message || 'Failed to run model test', true);
+    }
+  });
+
   toggleModelSections(newModelForm);
+  loadMeta();
   refresh();
 })();
 </script>
@@ -764,12 +871,18 @@ function sendHtml(res, html) {
 export async function startConfigUiServer(manager, options = {}) {
   const host = options.host ?? '127.0.0.1';
   const desiredPort = options.port ?? 4173;
+  const workspaceRoot = options.workspaceRoot ?? manager.workspaceRoot;
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://' + (req.headers.host ?? 'localhost'));
     try {
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         sendHtml(res, DASHBOARD_HTML);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/meta') {
+        sendJson(res, 200, { workspaceRoot });
         return;
       }
 
@@ -857,6 +970,41 @@ export async function startConfigUiServer(manager, options = {}) {
         config.additionalContextGlobs = globs.length ? globs : [];
         const updated = await manager.save(config);
         sendJson(res, 200, updated);
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/test-model') {
+        const body = JSON.parse((await readRequestBody(req)) || '{}');
+        const config = await manager.load();
+        const requestedId = typeof body.modelId === 'string' && body.modelId.trim() ? body.modelId.trim() : null;
+        const model =
+          config.models.find((item) => item.id === requestedId) ??
+          config.models.find((item) => item.id === config.activeModelId) ??
+          config.models[0];
+        if (!model) {
+          sendJson(res, 400, { message: 'No model configured.' });
+          return;
+        }
+        const diffText = typeof body.diff === 'string' ? body.diff : '';
+        const diffLines = diffText.trim()
+          ? diffText.split(/\r?\n/)
+          : ['@@ sample @@', '+function example() {', '+  return 42;', '+}'];
+        const diff = [
+          {
+            filePath: 'sample.patch',
+            hunks: diffLines
+          }
+        ];
+        const overridePrompt = typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt : undefined;
+        const context = {
+          repoRoot: manager.workspaceRoot,
+          commitRange: 'TEST-RANGE',
+          diff,
+          supplementaryFiles: {}
+        };
+        const prompt = buildPromptFromConfig(config, context, overridePrompt);
+        const output = await runModel(model, prompt);
+        sendJson(res, 200, { prompt, output });
         return;
       }
 

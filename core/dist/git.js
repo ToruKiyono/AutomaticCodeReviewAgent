@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 
-export function getDiffChunks({ commitRange, staged = false }) {
+export function getDiffChunks({ commitRange, staged = false, repoRoot }) {
   const args = ['diff'];
   if (staged) {
     args.push('--cached');
@@ -11,8 +11,9 @@ export function getDiffChunks({ commitRange, staged = false }) {
   args.push('--unified=0');
 
   let diffOutput = '';
+  const execOptions = { encoding: 'utf8', cwd: repoRoot ?? undefined };
   try {
-    diffOutput = execSync(`git ${args.join(' ')}`, { encoding: 'utf8' });
+    diffOutput = execSync(`git ${args.join(' ')}`, execOptions);
   } catch (error) {
     const stderr = error?.stderr?.toString() ?? error.message;
     throw new Error(`Failed to collect git diff: ${stderr}`);

@@ -103,7 +103,11 @@ export function renderReviewContext(context: {
 
 export function runModel(model: ChatModel, prompt: string): Promise<string>;
 
-export function getDiffChunks(options: { commitRange: string; staged?: boolean }): DiffChunk[];
+export function getDiffChunks(options: {
+  commitRange: string;
+  staged?: boolean;
+  repoRoot?: string;
+}): DiffChunk[];
 
 export function getFileContent(repoRoot: string, relativePath: string): string | null;
 
@@ -111,7 +115,18 @@ export const MODEL_TEMPLATES: ModelTemplate[];
 
 export function findModelTemplate(id: string): ModelTemplate | undefined;
 
+export function buildPromptFromConfig(
+  config: AgentConfig,
+  context: {
+    repoRoot: string;
+    commitRange: string;
+    diff: DiffChunk[];
+    supplementaryFiles: Record<string, string>;
+  },
+  overridePrompt?: string
+): string;
+
 export function startConfigUiServer(
   manager: ConfigManager,
-  options?: { host?: string; port?: number }
+  options?: { host?: string; port?: number; workspaceRoot?: string }
 ): Promise<ConfigUiServerHandle>;
